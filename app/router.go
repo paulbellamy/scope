@@ -60,10 +60,10 @@ var topologyRegistry = map[string]topologyView{
 	"containers": {
 		human:  "Containers",
 		parent: "",
-		renderer: render.Reduce([]render.Renderer{
+		renderer: newFilter(render.Reduce([]render.Renderer{
 			render.Map{Selector: report.SelectEndpoint, Mapper: render.MapEndpoint2Container, Pseudo: render.InternetOnlyPseudoNode},
 			render.Map{Selector: report.SelectContainer, Mapper: render.MapContainerIdentity, Pseudo: render.InternetOnlyPseudoNode},
-		}),
+		})),
 	},
 	"containers-by-image": {
 		human:    "by image",
@@ -81,4 +81,48 @@ type topologyView struct {
 	human    string
 	parent   string
 	renderer render.Renderer
+}
+
+func newFilter(next render.Renderer) render.Renderer {
+	return filter{next}
+}
+
+type filter struct{ render.Renderer }
+
+var majorLabels = map[string]bool{
+	"peter_app1_1": true,
+	"peter_db1_1":  true,
+	"app_web_1":    true,
+	"app_redis_1":  true,
+}
+
+func (f filter) Render(rpt report.Report) render.RenderableNodes {
+	output := f.Renderer.Render(rpt)
+
+	// Kill non-whitelisted nodes
+	for id, node := range output {
+		if _, ok := majorLabels[node.LabelMajor]; !ok {
+			delete(output, id)
+			continue
+		}
+	}
+
+	// Can't have dangling adjacencies
+	for id, node := range output {
+		newAdjacency := report.MakeIDList()
+		for _, dst := range node.Adjacency {
+			if _, ok := output[dst]; !ok {
+				continue
+			}
+			newAdjacency = newAdjacency.Add(dst)
+		}
+		node.Adjacency = newAdjacency
+		output[id] = node
+	}
+
+	return output
+}
+
+func (f filter) AggregateMetadata(rpt report.Report, localID, remoteID string) report.AggregateMetadata {
+	return f.Renderer.AggregateMetadata(rpt, localID, remoteID)
 }
