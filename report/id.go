@@ -55,11 +55,18 @@ func MakeEndpointNodeID(hostID, address, port string) string {
 
 // MakeAddressNodeID produces an address node ID from its composite parts.
 func MakeAddressNodeID(hostID, address string) string {
-	if !isLoopback(address) {
-		// Only loopback addresses get scoped by hostID.
-		hostID = ""
+	var scope string
+
+	// Loopback addresses and addresses explicity marked as
+	// local get scoped by hostID
+	addressIP := net.ParseIP(address)
+	if addressIP != nil && LocalNetworks.Contains(addressIP) {
+		scope = hostID
+	} else if isLoopback(address) {
+		scope = hostID
 	}
-	return hostID + ScopeDelim + address
+
+	return scope + ScopeDelim + address
 }
 
 // MakeProcessNodeID produces a process node ID from its composite parts.
@@ -100,11 +107,6 @@ func ParseNodeID(nodeID string) (hostID string, remainder string, ok bool) {
 func ExtractHostID(m NodeMetadata) string {
 	hostid, _, _ := ParseNodeID(m[HostNodeID])
 	return hostid
-}
-
-// MakePseudoNodeID produces a pseudo node ID from its composite parts.
-func MakePseudoNodeID(parts ...string) string {
-	return strings.Join(append([]string{"pseudo"}, parts...), ScopeDelim)
 }
 
 // IDAddresser tries to convert a node ID to a net.IP, if possible.

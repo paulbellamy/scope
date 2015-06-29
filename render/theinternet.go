@@ -4,24 +4,22 @@ import (
 	"net"
 	"strings"
 
+	"github.com/weaveworks/scope/probe/host"
 	"github.com/weaveworks/scope/report"
 )
-
-// Networks represent a set of subnets local to a report.
-type Networks []*net.IPNet
 
 // LocalNetworks returns a superset of the networks (think: CIDRs) that are
 // "local" from the perspective of each host represented in the report. It's
 // used to determine which nodes in the report are "remote", i.e. outside of
 // our infrastructure.
-func LocalNetworks(r report.Report) Networks {
+func LocalNetworks(r report.Report) report.Networks {
 	var (
-		result   = Networks{}
+		result   = report.Networks{}
 		networks = map[string]struct{}{}
 	)
 
 	for _, md := range r.Host.NodeMetadatas {
-		val, ok := md["local_networks"]
+		val, ok := md[host.LocalNetworks]
 		if !ok {
 			continue
 		}
@@ -38,14 +36,4 @@ func LocalNetworks(r report.Report) Networks {
 		}
 	}
 	return result
-}
-
-// Contains returns true if IP is in Networks.
-func (n Networks) Contains(ip net.IP) bool {
-	for _, net := range n {
-		if net.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }

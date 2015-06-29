@@ -1,4 +1,4 @@
-.PHONY: all deps static clean client-lint client-sync
+.PHONY: all deps static clean client-lint client-test client-sync
 
 # If you can use Docker without being root, you can `make SUDO= <target>`
 SUDO=sudo
@@ -23,7 +23,7 @@ $(SCOPE_EXPORT): $(APP_EXE) $(PROBE_EXE) docker/*
 
 $(APP_EXE): app/*.go render/*.go report/*.go xfer/*.go
 
-$(PROBE_EXE): probe/*.go probe/tag/*.go probe/docker/*.go report/*.go xfer/*.go
+$(PROBE_EXE): probe/*.go probe/docker/*.go probe/endpoint/*.go probe/host/*.go probe/process/*.go probe/tag/*.go report/*.go xfer/*.go
 
 $(APP_EXE) $(PROBE_EXE):
 	go get -tags netgo ./$(@D)

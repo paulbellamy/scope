@@ -1,4 +1,4 @@
-package main
+package host
 
 import (
 	"fmt"
@@ -7,6 +7,10 @@ import (
 )
 
 var loadRe = regexp.MustCompile(`load average\: ([0-9\.]+), ([0-9\.]+), ([0-9\.]+)`)
+
+func getKernelVersion() (string, error) {
+	return "", nil
+}
 
 func getLoad() string {
 	out, err := exec.Command("w").CombinedOutput()

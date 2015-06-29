@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/weaveworks/scope/probe/docker"
+	"github.com/weaveworks/scope/probe/host"
 	"github.com/weaveworks/scope/report"
 )
 
@@ -34,7 +35,7 @@ type LeafMapFunc func(report.NodeMetadata) (RenderableNode, bool)
 // The srcNode renderable node is essentially from MapFunc, representing one of
 // the rendered nodes this pseudo node refers to. srcNodeID and dstNodeID are
 // node IDs prior to mapping.
-type PseudoFunc func(srcNodeID string, srcNode RenderableNode, dstNodeID string, local Networks) (RenderableNode, bool)
+type PseudoFunc func(srcNodeID string, srcNode RenderableNode, dstNodeID string, local report.Networks) (RenderableNode, bool)
 
 // MapFunc is anything which can take an arbitrary RenderableNode and
 // return another RenderableNode.
@@ -48,7 +49,7 @@ type MapFunc func(RenderableNode) (RenderableNode, bool)
 // assume the presence of certain keys.
 func MapEndpointIdentity(m report.NodeMetadata) (RenderableNode, bool) {
 	var (
-		id      = fmt.Sprintf("endpoint:%s:%s:%s", report.ExtractHostID(m), m["addr"], m["port"])
+		id      = MakeEndpointID(report.ExtractHostID(m), m["addr"], m["port"])
 		major   = fmt.Sprintf("%s:%s", m["addr"], m["port"])
 		pid, ok = m["pid"]
 		minor   = report.ExtractHostID(m)
@@ -67,7 +68,7 @@ func MapEndpointIdentity(m report.NodeMetadata) (RenderableNode, bool) {
 // presence of certain keys.
 func MapProcessIdentity(m report.NodeMetadata) (RenderableNode, bool) {
 	var (
-		id    = fmt.Sprintf("pid:%s:%s", report.ExtractHostID(m), m["pid"])
+		id    = MakeProcessID(report.ExtractHostID(m), m["pid"])
 		major = m["comm"]
 		minor = fmt.Sprintf("%s (%s)", report.ExtractHostID(m), m["pid"])
 		rank  = m["pid"]
@@ -108,7 +109,7 @@ func MapContainerImageIdentity(m report.NodeMetadata) (RenderableNode, bool) {
 // assume the presence of certain keys.
 func MapAddressIdentity(m report.NodeMetadata) (RenderableNode, bool) {
 	var (
-		id    = fmt.Sprintf("address:%s:%s", report.ExtractHostID(m), m["addr"])
+		id    = MakeAddressID(report.ExtractHostID(m), m["addr"])
 		major = m["addr"]
 		minor = report.ExtractHostID(m)
 		rank  = major
@@ -122,8 +123,8 @@ func MapAddressIdentity(m report.NodeMetadata) (RenderableNode, bool) {
 // assume the presence of certain keys.
 func MapHostIdentity(m report.NodeMetadata) (RenderableNode, bool) {
 	var (
-		id                 = fmt.Sprintf("host:%s", report.ExtractHostID(m))
-		hostname           = m["host_name"]
+		id                 = MakeHostID(report.ExtractHostID(m))
+		hostname           = m[host.HostName]
 		parts              = strings.SplitN(hostname, ".", 2)
 		major, minor, rank = "", "", ""
 	)
@@ -155,11 +156,10 @@ func MapEndpoint2Process(n RenderableNode) (RenderableNode, bool) {
 
 	pid, ok := n.NodeMetadata["pid"]
 	if !ok {
-		// TODO: Propogate a pseudo node instead of dropping this?
 		return RenderableNode{}, false
 	}
 
-	id := fmt.Sprintf("pid:%s:%s", report.ExtractHostID(n.NodeMetadata), pid)
+	id := MakeProcessID(report.ExtractHostID(n.NodeMetadata), pid)
 	return newDerivedNode(id, n), true
 }
 
@@ -180,11 +180,22 @@ func MapProcess2Container(n RenderableNode) (RenderableNode, bool) {
 		return n, true
 	}
 
+	// Don't propogate non-internet pseudo nodes
+	if n.Pseudo {
+		return n, false
+	}
+
 	// Otherwise, if the process is not in a container, group it
-	// into an "Uncontained" node
+	// into an per-host "Uncontained" node.  If for whatever reason
+	// this node doesn't have a host id in their nodemetadata, it'll
+	// all get grouped into a single uncontained node.
 	id, ok := n.NodeMetadata[docker.ContainerID]
-	if !ok || n.Pseudo {
-		return newDerivedPseudoNode(UncontainedID, UncontainedMajor, n), true
+	if !ok {
+		hostID := report.ExtractHostID(n.NodeMetadata)
+		id = MakePseudoNodeID(UncontainedID, hostID)
+		node := newDerivedPseudoNode(id, UncontainedMajor, n)
+		node.LabelMinor = hostID
+		return node, true
 	}
 
 	return newDerivedNode(id, n), true
@@ -203,7 +214,6 @@ func MapProcess2Name(n RenderableNode) (RenderableNode, bool) {
 
 	name, ok := n.NodeMetadata["comm"]
 	if !ok {
-		// TODO: Propogate a pseudo node instead of dropping this?
 		return RenderableNode{}, false
 	}
 
@@ -225,16 +235,16 @@ func MapProcess2Name(n RenderableNode) (RenderableNode, bool) {
 // It does not have enough info to do that, and the resulting graph
 // must be merged with a container graph to get that info.
 func MapContainer2ContainerImage(n RenderableNode) (RenderableNode, bool) {
-	// Propogate the internet pseudo node
-	if n.ID == TheInternetID {
+	// Propogate all pseudo nodes
+	if n.Pseudo {
 		return n, true
 	}
 
-	// Otherwise, if the process is not in a container, group it
-	// into an "Uncontained" node
+	// Otherwise, if some some reason the container doesn't have a image_id
+	// (maybe slightly out of sync reports), just drop it
 	id, ok := n.NodeMetadata[docker.ImageID]
-	if !ok || n.Pseudo {
-		return newDerivedPseudoNode(UncontainedID, UncontainedMajor, n), true
+	if !ok {
+		return n, false
 	}
 
 	return newDerivedNode(id, n), true
@@ -248,7 +258,7 @@ func MapAddress2Host(n RenderableNode) (RenderableNode, bool) {
 		return n, true
 	}
 
-	id := fmt.Sprintf("host:%s", report.ExtractHostID(n.NodeMetadata))
+	id := MakeHostID(report.ExtractHostID(n.NodeMetadata))
 	return newDerivedNode(id, n), true
 }
 
@@ -257,7 +267,7 @@ func MapAddress2Host(n RenderableNode) (RenderableNode, bool) {
 // the report's local networks.  Otherwise, the returned function will
 // produce a single pseudo node per (dst address, src address, src port).
 func GenericPseudoNode(addresser func(id string) net.IP) PseudoFunc {
-	return func(src string, srcMapped RenderableNode, dst string, local Networks) (RenderableNode, bool) {
+	return func(src string, srcMapped RenderableNode, dst string, local report.Networks) (RenderableNode, bool) {
 		// Use the addresser to extract the destination IP
 		dstNodeAddr := addresser(dst)
 
@@ -271,14 +281,14 @@ func GenericPseudoNode(addresser func(id string) net.IP) PseudoFunc {
 		// dstNodeAddr, srcNodeAddr, srcNodePort.
 		srcNodeAddr, srcNodePort := trySplitAddr(src)
 
-		outputID := report.MakePseudoNodeID(dstNodeAddr.String(), srcNodeAddr, srcNodePort)
+		outputID := MakePseudoNodeID(dstNodeAddr.String(), srcNodeAddr, srcNodePort)
 		major := dstNodeAddr.String()
 		return newPseudoNode(outputID, major, ""), true
 	}
 }
 
 // PanicPseudoNode just panics; it is for Topologies without edges
-func PanicPseudoNode(src string, srcMapped RenderableNode, dst string, local Networks) (RenderableNode, bool) {
+func PanicPseudoNode(src string, srcMapped RenderableNode, dst string, local report.Networks) (RenderableNode, bool) {
 	panic(dst)
 }
 

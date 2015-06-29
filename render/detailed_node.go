@@ -3,14 +3,24 @@ package render
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 
 	"github.com/weaveworks/scope/probe/docker"
+	"github.com/weaveworks/scope/probe/host"
+	"github.com/weaveworks/scope/probe/process"
 	"github.com/weaveworks/scope/report"
 )
 
 const (
-	mb = 1 << 20
+	mb                 = 1 << 20
+	connectionsRank    = 100
+	containerImageRank = 4
+	containerRank      = 3
+	processRank        = 2
+	hostRank           = 1
+	endpointRank       = 0 // this is the least important table, so sort to bottom
+	addressRank        = 0 // also least important; never merged with endpoints
 )
 
 // DetailedNode is the data type that's yielded to the JavaScript layer when
@@ -28,6 +38,7 @@ type DetailedNode struct {
 type Table struct {
 	Title   string `json:"title"`   // e.g. Bandwidth
 	Numeric bool   `json:"numeric"` // should the major column be right-aligned?
+	Rank    int    `json:"-"`       // used to sort tables; not emitted.
 	Rows    []Row  `json:"rows"`
 }
 
@@ -38,10 +49,16 @@ type Row struct {
 	ValueMinor string `json:"value_minor,omitempty"` // e.g. KB/s
 }
 
+type tables []Table
+
+func (t tables) Len() int           { return len(t) }
+func (t tables) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
+func (t tables) Less(i, j int) bool { return t[i].Rank > t[j].Rank }
+
 // MakeDetailedNode transforms a renderable node to a detailed node. It uses
 // aggregate metadata, plus the set of origin node IDs, to produce tables.
 func MakeDetailedNode(r report.Report, n RenderableNode) DetailedNode {
-	tables := []Table{}
+	tables := tables{}
 	{
 		rows := []Row{}
 		if val, ok := n.AggregateMetadata[KeyMaxConnCountTCP]; ok {
@@ -54,7 +71,7 @@ func MakeDetailedNode(r report.Report, n RenderableNode) DetailedNode {
 			rows = append(rows, Row{"Bytes egress", strconv.FormatInt(int64(val), 10), ""})
 		}
 		if len(rows) > 0 {
-			tables = append(tables, Table{"Connections", true, rows})
+			tables = append(tables, Table{"Connections", true, connectionsRank, rows})
 		}
 	}
 
@@ -74,6 +91,9 @@ outer:
 			tables = append(tables, table)
 		}
 	}
+
+	// Sort tables by rank
+	sort.Sort(tables)
 
 	return DetailedNode{
 		ID:         n.ID,
@@ -122,6 +142,7 @@ func endpointOriginTable(nmd report.NodeMetadata) (Table, bool) {
 		Title:   "Origin Endpoint",
 		Numeric: false,
 		Rows:    rows,
+		Rank:    endpointRank,
 	}, len(rows) > 0
 }
 
@@ -134,24 +155,29 @@ func addressOriginTable(nmd report.NodeMetadata) (Table, bool) {
 		Title:   "Origin Address",
 		Numeric: false,
 		Rows:    rows,
+		Rank:    addressRank,
 	}, len(rows) > 0
 }
 
 func processOriginTable(nmd report.NodeMetadata) (Table, bool) {
 	rows := []Row{}
-	if val, ok := nmd["comm"]; ok {
-		rows = append(rows, Row{"Name (comm)", val, ""})
+	for _, tuple := range []struct{ key, human string }{
+		{process.Comm, "Name (comm)"},
+		{process.PID, "PID"},
+		{process.PPID, "Parent PID"},
+		{process.Cmdline, "Command"},
+		{process.Threads, "# Threads"},
+	} {
+		if val, ok := nmd[tuple.key]; ok {
+			rows = append(rows, Row{Key: tuple.human, ValueMajor: val, ValueMinor: ""})
+		}
 	}
-	if val, ok := nmd["pid"]; ok {
-		rows = append(rows, Row{"PID", val, ""})
-	}
-	if val, ok := nmd["ppid"]; ok {
-		rows = append(rows, Row{"Parent PID", val, ""})
-	}
+
 	return Table{
 		Title:   "Origin Process",
 		Numeric: false,
 		Rows:    rows,
+		Rank:    processRank,
 	}, len(rows) > 0
 }
 
@@ -182,6 +208,7 @@ func containerOriginTable(nmd report.NodeMetadata) (Table, bool) {
 		Title:   "Origin Container",
 		Numeric: false,
 		Rows:    rows,
+		Rank:    containerRank,
 	}, len(rows) > 0
 }
 
@@ -199,23 +226,28 @@ func containerImageOriginTable(nmd report.NodeMetadata) (Table, bool) {
 		Title:   "Origin Container Image",
 		Numeric: false,
 		Rows:    rows,
+		Rank:    containerImageRank,
 	}, len(rows) > 0
 }
 
 func hostOriginTable(nmd report.NodeMetadata) (Table, bool) {
 	rows := []Row{}
-	if val, ok := nmd["host_name"]; ok {
-		rows = append(rows, Row{"Host name", val, ""})
+	for _, tuple := range []struct{ key, human string }{
+		{host.HostName, "Host name"},
+		{host.Load, "Load"},
+		{host.OS, "Operating system"},
+		{host.KernelVersion, "Kernel version"},
+		{host.Uptime, "Uptime"},
+	} {
+		if val, ok := nmd[tuple.key]; ok {
+			rows = append(rows, Row{Key: tuple.human, ValueMajor: val, ValueMinor: ""})
+		}
 	}
-	if val, ok := nmd["load"]; ok {
-		rows = append(rows, Row{"Load", val, ""})
-	}
-	if val, ok := nmd["os"]; ok {
-		rows = append(rows, Row{"Operating system", val, ""})
-	}
+
 	return Table{
 		Title:   "Origin Host",
 		Numeric: false,
 		Rows:    rows,
+		Rank:    hostRank,
 	}, len(rows) > 0
 }

@@ -3,18 +3,20 @@ package main
 import (
 	"flag"
 	"log"
-	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/weaveworks/procspy"
 	"github.com/weaveworks/scope/probe/docker"
+	"github.com/weaveworks/scope/probe/endpoint"
+	"github.com/weaveworks/scope/probe/host"
+	"github.com/weaveworks/scope/probe/process"
 	"github.com/weaveworks/scope/probe/tag"
 	"github.com/weaveworks/scope/report"
 	"github.com/weaveworks/scope/xfer"
@@ -34,6 +36,7 @@ func main() {
 		spyProcs           = flag.Bool("processes", true, "report processes (needs root)")
 		dockerEnabled      = flag.Bool("docker", true, "collect Docker-related attributes for processes")
 		dockerInterval     = flag.Duration("docker.interval", 10*time.Second, "how often to update Docker attributes")
+		dockerBridge       = flag.String("docker.bridge", "docker0", "the docker bridge name")
 		weaveRouterAddr    = flag.String("weave.router.addr", "", "IP address or FQDN of the Weave router")
 		procRoot           = flag.String("proc.root", "/proc", "location of the proc filesystem")
 	)
@@ -55,7 +58,10 @@ func main() {
 			log.Printf("exposing Prometheus endpoint at %s%s", *httpListen, *prometheusEndpoint)
 			http.Handle(*prometheusEndpoint, makePrometheusHandler())
 		}
-		go func(err error) { log.Print(err) }(http.ListenAndServe(*httpListen, nil))
+		go func() {
+			err := http.ListenAndServe(*httpListen, nil)
+			log.Print(err)
+		}()
 	}
 
 	if *spyProcs && os.Getegid() != 0 {
@@ -74,21 +80,39 @@ func main() {
 	)
 
 	var (
-		weaveTagger *tag.WeaveTagger
+		weaveTagger  *tag.WeaveTagger
+		processCache *process.CachingWalker
 	)
 
-	taggers := []tag.Tagger{tag.NewTopologyTagger(), tag.NewOriginHostTagger(hostID)}
-	reporters := []tag.Reporter{}
+	taggers := []tag.Tagger{
+		tag.NewTopologyTagger(),
+		tag.NewOriginHostTagger(hostID),
+	}
 
-	if *dockerEnabled && runtime.GOOS == linux {
-		dockerRegistry, err := docker.NewRegistry(*dockerInterval)
-		if err != nil {
-			log.Fatalf("failed to start docker registry: %v", err)
+	reporters := []tag.Reporter{
+		host.NewReporter(hostID, hostName),
+		endpoint.NewReporter(hostID, hostName, *spyProcs),
+	}
+
+	// TODO provide an alternate implementation for Darwin.
+	if runtime.GOOS == linux {
+		processCache = process.NewCachingWalker(process.NewWalker(*procRoot))
+		reporters = append(reporters, process.NewReporter(processCache, hostID))
+
+		if *dockerEnabled {
+			if err = report.AddLocalBridge(*dockerBridge); err != nil {
+				log.Fatalf("failed to get docker bridge address: %v", err)
+			}
+
+			dockerRegistry, err := docker.NewRegistry(*dockerInterval)
+			if err != nil {
+				log.Fatalf("failed to start docker registry: %v", err)
+			}
+			defer dockerRegistry.Stop()
+
+			taggers = append(taggers, docker.NewTagger(dockerRegistry, processCache))
+			reporters = append(reporters, docker.NewReporter(dockerRegistry, hostID))
 		}
-		defer dockerRegistry.Stop()
-
-		taggers = append(taggers, docker.NewTagger(dockerRegistry, *procRoot))
-		reporters = append(reporters, docker.NewReporter(dockerRegistry, hostID))
 	}
 
 	if *weaveRouterAddr != "" {
@@ -119,23 +143,18 @@ func main() {
 				r = report.MakeReport()
 
 			case <-spyTick:
-				r.Merge(spy(hostID, hostName, *spyProcs))
-
-				// Do this every tick so it gets tagged by the OriginHostTagger
-				r.Host = hostTopology(hostID, hostName)
-
-				// TODO abstract PIDTree to a process provider, and provide an
-				// alternate implementation for Darwin.
-				if runtime.GOOS == linux {
-					if pidTree, err := tag.NewPIDTree(*procRoot); err == nil {
-						r.Process.Merge(pidTree.ProcessTopology(hostID))
-					} else {
-						log.Printf("PIDTree: %v", err)
+				if processCache != nil {
+					if err := processCache.Update(); err != nil {
+						log.Printf("error reading processes: %v", err)
 					}
 				}
 
 				for _, reporter := range reporters {
-					r.Merge(reporter.Report())
+					newReport, err := reporter.Report()
+					if err != nil {
+						log.Printf("error generating report: %v", err)
+					}
+					r.Merge(newReport)
 				}
 
 				if weaveTagger != nil {
@@ -151,29 +170,6 @@ func main() {
 	}()
 
 	log.Printf("%s", <-interrupt())
-}
-
-// hostTopology produces a host topology for this host. No need to do this
-// more than once per published report.
-func hostTopology(hostID, hostName string) report.Topology {
-	var localCIDRs []string
-	if localNets, err := net.InterfaceAddrs(); err == nil {
-		// Not all networks are IP networks.
-		for _, localNet := range localNets {
-			if ipNet, ok := localNet.(*net.IPNet); ok {
-				localCIDRs = append(localCIDRs, ipNet.String())
-			}
-		}
-	}
-	t := report.NewTopology()
-	t.NodeMetadatas[report.MakeHostNodeID(hostID)] = report.NodeMetadata{
-		"ts":             time.Now().UTC().Format(time.RFC3339Nano),
-		"host_name":      hostName,
-		"local_networks": strings.Join(localCIDRs, " "),
-		"os":             runtime.GOOS,
-		"load":           getLoad(),
-	}
-	return t
 }
 
 func interrupt() chan os.Signal {

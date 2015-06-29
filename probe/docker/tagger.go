@@ -3,7 +3,7 @@ package docker
 import (
 	"strconv"
 
-	"github.com/weaveworks/scope/probe/tag"
+	"github.com/weaveworks/scope/probe/process"
 	"github.com/weaveworks/scope/report"
 )
 
@@ -15,35 +15,35 @@ const (
 
 // These vars are exported for testing.
 var (
-	NewPIDTreeStub = tag.NewPIDTree
+	NewProcessTreeStub = process.NewTree
 )
 
 // Tagger is a tagger that tags Docker container information to process
 // nodes that have a PID.
 type Tagger struct {
-	procRoot string
-	registry Registry
+	registry   Registry
+	procWalker process.Walker
 }
 
 // NewTagger returns a usable Tagger.
-func NewTagger(registry Registry, procRoot string) *Tagger {
+func NewTagger(registry Registry, procWalker process.Walker) *Tagger {
 	return &Tagger{
-		registry: registry,
-		procRoot: procRoot,
+		registry:   registry,
+		procWalker: procWalker,
 	}
 }
 
 // Tag implements Tagger.
 func (t *Tagger) Tag(r report.Report) (report.Report, error) {
-	pidTree, err := NewPIDTreeStub(t.procRoot)
+	tree, err := NewProcessTreeStub(t.procWalker)
 	if err != nil {
 		return report.MakeReport(), err
 	}
-	t.tag(pidTree, &r.Process)
+	t.tag(tree, &r.Process)
 	return r, nil
 }
 
-func (t *Tagger) tag(pidTree tag.PIDTree, topology *report.Topology) {
+func (t *Tagger) tag(tree process.Tree, topology *report.Topology) {
 	for nodeID, nodeMetadata := range topology.NodeMetadatas {
 		pidStr, ok := nodeMetadata["pid"]
 		if !ok {
@@ -67,7 +67,7 @@ func (t *Tagger) tag(pidTree tag.PIDTree, topology *report.Topology) {
 					break
 				}
 
-				candidate, err = pidTree.GetParent(candidate)
+				candidate, err = tree.GetParent(candidate)
 				if err != nil {
 					break
 				}
