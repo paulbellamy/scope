@@ -23,8 +23,21 @@ func (t *Topology) Merge(other Topology) {
 
 // Merge merges another Adjacency list into the receiver.
 func (a *Adjacency) Merge(other Adjacency) {
-	for addr, adj := range other {
-		(*a)[addr] = (*a)[addr].Add(adj...)
+	for id, adjmeta := range other {
+		local := (*a)[id]
+		local.Merge(adjmeta)
+		(*a)[id] = local
+	}
+}
+
+func (a *AdjacencyMetadata) Merge(other AdjacencyMetadata) {
+	for _, id := range other.IDs {
+		firstSeen := a.FirstSeen[id]
+		otherFirstSeen := other.FirstSeen[id]
+		if firstSeen.IsZero() || otherFirstSeen.Before(firstSeen) {
+			firstSeen = otherFirstSeen
+		}
+		(*a) = a.Add(id, firstSeen)
 	}
 }
 

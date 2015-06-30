@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 const localUnknown = "localUnknown"
@@ -16,9 +17,24 @@ type Topology struct {
 	NodeMetadatas
 }
 
+type AdjacencyMetadata struct {
+	IDs       IDList
+	FirstSeen map[string]time.Time
+}
+
+// Add is the only correct way to add adjacencies to an AdjacencyMetadataList.
+func (a AdjacencyMetadata) Add(id string, firstSeen time.Time) AdjacencyMetadata {
+	a.IDs = a.IDs.Add(id)
+	if a.FirstSeen == nil {
+		a.FirstSeen = map[string]time.Time{}
+	}
+	a.FirstSeen[id] = firstSeen
+	return a
+}
+
 // Adjacency is an adjacency-list encoding of the topology. Keys are node IDs,
 // as produced by the relevant MappingFunc for the topology.
-type Adjacency map[string]IDList
+type Adjacency map[string]AdjacencyMetadata
 
 // EdgeMetadatas collect metadata about each edge in a topology. Keys are a
 // concatenation of node IDs.
@@ -68,7 +84,7 @@ func (nm NodeMetadata) Merge(other NodeMetadata) NodeMetadata {
 // NewTopology gives you a Topology.
 func NewTopology() Topology {
 	return Topology{
-		Adjacency:     map[string]IDList{},
+		Adjacency:     map[string]AdjacencyMetadata{},
 		EdgeMetadatas: map[string]EdgeMetadata{},
 		NodeMetadatas: map[string]NodeMetadata{},
 	}
@@ -94,7 +110,7 @@ func (t Topology) Validate() error {
 			errs = append(errs, fmt.Sprintf("adjacency entries missing for source node ID %q (from edge %q)", srcNodeID, edgeID))
 			continue
 		}
-		if !dstNodeIDs.Contains(dstNodeID) {
+		if !dstNodeIDs.IDs.Contains(dstNodeID) {
 			errs = append(errs, fmt.Sprintf("adjacency destination missing for destination node ID %q (from edge %q)", dstNodeID, edgeID))
 			continue
 		}

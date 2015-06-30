@@ -189,7 +189,7 @@ func (m LeafMap) Render(rpt report.Report) RenderableNodes {
 			continue
 		}
 
-		for _, dstNodeID := range dsts {
+		for _, dstNodeID := range dsts.IDs {
 			dstRenderableID, ok := source2mapped[dstNodeID]
 			if !ok {
 				pseudoNode, ok := m.Pseudo(srcNodeID, srcRenderableNode, dstNodeID, localNetworks)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/weaveworks/scope/probe/docker"
 	"github.com/weaveworks/scope/probe/host"
@@ -127,23 +128,28 @@ func connectionDetailsRows(endpointTopology report.Topology, originID string, nm
 	rows := []Row{}
 	local := fmt.Sprintf("%s:%s", nmd["addr"], nmd["port"])
 	adjacencies := endpointTopology.Adjacency[report.MakeAdjacencyID(originID)]
-	sort.Strings(adjacencies)
-	for _, adj := range adjacencies {
+	sort.Strings(adjacencies.IDs)
+	for _, adj := range adjacencies.IDs {
 		if _, address, port, ok := report.ParseEndpointNodeID(adj); ok {
 			rows = append(rows, Row{
 				Key:        local,
 				ValueMajor: fmt.Sprintf("%s:%s", address, port),
+				ValueMinor: truncateDuration(time.Since(adjacencies.FirstSeen[adj]), 1*time.Second).String(),
 			})
 		}
 	}
 	return rows
 }
 
+func truncateDuration(d time.Duration, resolution time.Duration) time.Duration {
+	return resolution * (d / resolution)
+}
+
 func connectionDetailsTable(connectionRows []Row) Table {
 	return Table{
 		Title:   "Connection Details",
 		Numeric: false,
-		Rows:    append([]Row{{Key: "Local", ValueMajor: "Remote"}}, connectionRows...),
+		Rows:    append([]Row{{Key: "Local", ValueMajor: "Remote", ValueMinor: "Age"}}, connectionRows...),
 		Rank:    endpointRank,
 	}
 }

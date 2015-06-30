@@ -13,10 +13,11 @@ import (
 
 // Reporter generates Reports containing the Endpoint topology.
 type Reporter struct {
+	firstSeenTimes   map[string]time.Time
 	hostID           string
 	hostName         string
-	includeProcesses bool
 	includeNAT       bool
+	includeProcesses bool
 }
 
 // SpyDuration is an exported prometheus metric
@@ -38,18 +39,20 @@ var SpyDuration = prometheus.NewSummaryVec(
 // with process (PID) information.
 func NewReporter(hostID, hostName string, includeProcesses bool) *Reporter {
 	return &Reporter{
+		firstSeenTimes:   map[string]time.Time{},
 		hostID:           hostID,
 		hostName:         hostName,
-		includeProcesses: includeProcesses,
 		includeNAT:       conntrackModulePresent(),
+		includeProcesses: includeProcesses,
 	}
 }
 
 // Report implements Reporter.
 func (r *Reporter) Report() (report.Report, error) {
+	now := time.Now()
 	defer func(begin time.Time) {
 		SpyDuration.WithLabelValues().Observe(float64(time.Since(begin)))
-	}(time.Now())
+	}(now)
 
 	rpt := report.MakeReport()
 	conns, err := procspy.Connections(r.includeProcesses)
@@ -58,8 +61,10 @@ func (r *Reporter) Report() (report.Report, error) {
 	}
 
 	for conn := conns.Next(); conn != nil; conn = conns.Next() {
-		r.addConnection(&rpt, conn)
+		r.addConnection(&rpt, conn, now)
 	}
+
+	r.cleanupConnections(&rpt)
 
 	if r.includeNAT {
 		err = applyNAT(rpt, r.hostID)
@@ -68,15 +73,16 @@ func (r *Reporter) Report() (report.Report, error) {
 	return rpt, err
 }
 
-func (r *Reporter) addConnection(rpt *report.Report, c *procspy.Connection) {
+func (r *Reporter) addConnection(rpt *report.Report, c *procspy.Connection, firstSeen time.Time) {
 	var (
 		scopedLocal  = report.MakeAddressNodeID(r.hostID, c.LocalAddress.String())
 		scopedRemote = report.MakeAddressNodeID(r.hostID, c.RemoteAddress.String())
 		key          = report.MakeAdjacencyID(scopedLocal)
 		edgeKey      = report.MakeEdgeID(scopedLocal, scopedRemote)
 	)
+	firstSeen = r.lookupFirstSeenTime(edgeKey, firstSeen)
 
-	rpt.Address.Adjacency[key] = rpt.Address.Adjacency[key].Add(scopedRemote)
+	rpt.Address.Adjacency[key] = rpt.Address.Adjacency[key].Add(scopedRemote, firstSeen)
 
 	if _, ok := rpt.Address.NodeMetadatas[scopedLocal]; !ok {
 		rpt.Address.NodeMetadatas[scopedLocal] = report.NodeMetadata{
@@ -94,8 +100,9 @@ func (r *Reporter) addConnection(rpt *report.Report, c *procspy.Connection) {
 			key          = report.MakeAdjacencyID(scopedLocal)
 			edgeKey      = report.MakeEdgeID(scopedLocal, scopedRemote)
 		)
+		firstSeen = r.lookupFirstSeenTime(edgeKey, firstSeen)
 
-		rpt.Endpoint.Adjacency[key] = rpt.Endpoint.Adjacency[key].Add(scopedRemote)
+		rpt.Endpoint.Adjacency[key] = rpt.Endpoint.Adjacency[key].Add(scopedRemote, firstSeen)
 
 		if _, ok := rpt.Endpoint.NodeMetadatas[scopedLocal]; !ok {
 			// First hit establishes NodeMetadata for scoped local address + port
@@ -117,4 +124,29 @@ func countTCPConnection(m report.EdgeMetadatas, edgeKey string) {
 	edgeMeta.WithConnCountTCP = true
 	edgeMeta.MaxConnCountTCP++
 	m[edgeKey] = edgeMeta
+}
+
+func (r *Reporter) lookupFirstSeenTime(edgeKey string, firstSeen time.Time) time.Time {
+	if t, ok := r.firstSeenTimes[edgeKey]; ok {
+		firstSeen = t
+	} else {
+		r.firstSeenTimes[edgeKey] = firstSeen
+	}
+	return firstSeen
+}
+
+func (r *Reporter) cleanupConnections(rpt *report.Report) {
+	missingKeys := []string{}
+	for edgeKey, _ := range r.firstSeenTimes {
+		if _, ok := rpt.Address.EdgeMetadatas[edgeKey]; !ok {
+			continue
+		}
+		if _, ok := rpt.Endpoint.EdgeMetadatas[edgeKey]; !ok {
+			continue
+		}
+		missingKeys = append(missingKeys, edgeKey)
+	}
+	for _, edgeKey := range missingKeys {
+		delete(r.firstSeenTimes, edgeKey)
+	}
 }
