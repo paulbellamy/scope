@@ -8,7 +8,7 @@ type IDList []string
 // MakeIDList makes a new IDList.
 func MakeIDList(ids ...string) IDList {
 	sort.Strings(ids)
-	return IDList(ids)
+	return IDList{}.Add(ids...)
 }
 
 // Add is the only correct way to add ids to an IDList.

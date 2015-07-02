@@ -20,3 +20,10 @@ func TestIDList(t *testing.T) {
 		t.Errorf("want %+v, have %+v", want, have)
 	}
 }
+
+func TestMakeIDListElimitatesDuplicates(t *testing.T) {
+	have := report.MakeIDList("alpha", "zeta", "alpha")
+	if want := report.IDList([]string{"alpha", "zeta"}); !reflect.DeepEqual(want, have) {
+		t.Errorf("want %+v, have %+v", want, have)
+	}
+}
